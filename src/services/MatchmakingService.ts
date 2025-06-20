@@ -183,7 +183,9 @@ export class MatchmakingService {
       // Get all players in queue
       const queueEntries = Object.values(playerQueue);
       
-      if (queueEntries.length < GAME_CONSTANTS.DEFAULT_PLAYERS) {
+      // For testing purposes, allow a match with just 1 player
+      // In production, this would require GAME_CONSTANTS.MIN_PLAYERS (typically 2-4)
+      if (queueEntries.length < 1) {
         // Not enough players to start a game
         return { 
           success: true, 
@@ -201,7 +203,7 @@ export class MatchmakingService {
         .sort((a, b) => new Date(a.joined_at).getTime() - new Date(b.joined_at).getTime())
         .slice(0, GAME_CONSTANTS.DEFAULT_PLAYERS);
       
-      if (playersToMatch.length >= GAME_CONSTANTS.MIN_PLAYERS) {
+      if (playersToMatch.length >= 1) { // Changed from MIN_PLAYERS to 1 for testing
         // Create a new game
         const result = await this.createGameForMatchedPlayers(playersToMatch);
         
@@ -246,7 +248,7 @@ export class MatchmakingService {
       // Create the game
       const createResult = await GameService.createGame({
         prompt,
-        max_players: players.length
+        max_players: Math.max(players.length, GAME_CONSTANTS.MIN_PLAYERS)
       });
       
       if (!createResult.success || !createResult.data) {

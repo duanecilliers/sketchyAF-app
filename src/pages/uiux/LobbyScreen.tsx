@@ -36,7 +36,8 @@ const LobbyScreen: React.FC = () => {
     estimatedWaitTime,
     playersInQueue,
     joinQueue,
-    leaveQueue
+    leaveQueue,
+    isRefreshing
   } = useQueueStatus();
   
   const [currentTip, setCurrentTip] = useState(0);
@@ -44,6 +45,7 @@ const LobbyScreen: React.FC = () => {
   const [isJoiningQueue, setIsJoiningQueue] = useState(false);
   const [isLeavingQueue, setIsLeavingQueue] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [matchAcceptCountdown, setMatchAcceptCountdown] = useState(10);
   
   // Tips for the waiting screen
   const TIPS_AND_TRIVIA = [
@@ -94,8 +96,23 @@ const LobbyScreen: React.FC = () => {
   useEffect(() => {
     if (isInQueue && queuePosition === 1 && !showMatchFound) {
       setShowMatchFound(true);
+      setMatchAcceptCountdown(10);
     }
   }, [isInQueue, queuePosition, showMatchFound]);
+  
+  // Match accept countdown
+  useEffect(() => {
+    if (showMatchFound && matchAcceptCountdown > 0) {
+      const timer = setTimeout(() => {
+        setMatchAcceptCountdown(prev => prev - 1);
+      }, 1000);
+      
+      return () => clearTimeout(timer);
+    } else if (showMatchFound && matchAcceptCountdown === 0) {
+      // Auto-accept when countdown reaches zero
+      handleAcceptMatch();
+    }
+  }, [showMatchFound, matchAcceptCountdown]);
   
   // Clear local error after 5 seconds
   useEffect(() => {
@@ -148,9 +165,17 @@ const LobbyScreen: React.FC = () => {
     }
   };
 
-  const handleAcceptMatch = () => {
+  const handleAcceptMatch = async () => {
     setShowMatchFound(false);
-    // Match acceptance is handled automatically by the matchmaking service
+    
+    // If we're already in a game, we don't need to do anything else
+    if (isInGame && currentGame) {
+      return;
+    }
+    
+    // If we're not in a game yet, we need to wait for the match to be created
+    // This is handled automatically by the matchmaking service
+    // The game context will update when the match is created
   };
 
   const handleDeclineMatch = async () => {
@@ -543,7 +568,7 @@ const LobbyScreen: React.FC = () => {
                   </div>
                   
                   <p className="text-xs text-medium-gray mt-3">
-                    Auto-accepting in 10s...
+                    Auto-accepting in {matchAcceptCountdown}s...
                   </p>
                 </div>
               </motion.div>
