@@ -523,7 +523,7 @@ const LobbyScreen: React.FC = () => {
 
         {/* Match Found Modal */}
         <AnimatePresence>
-          {showMatchFound && (
+          {showMatchFound\ && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
