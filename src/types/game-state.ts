@@ -21,12 +21,14 @@ export enum GamePhase {
   RESULTS = 'results',
   COMPLETED = 'completed',
   CANCELLED = 'cancelled',
-  NOT_IN_GAME = 'not_in_game'
+  NOT_IN_GAME = 'not_in_game',
+  MATCHMAKING = 'matchmaking' // Added for matchmaking queue
 }
 
 // Player Status in a Game
 export enum PlayerStatus {
   NOT_IN_GAME = 'not_in_game',
+  MATCHMAKING = 'matchmaking', // Added for matchmaking queue
   WAITING = 'waiting',
   READY = 'ready',
   DRAWING = 'drawing',
@@ -42,6 +44,12 @@ export interface GameState {
   currentGame: Game | null;
   gamePhase: GamePhase;
   isInGame: boolean;
+  
+  // Matchmaking
+  isInQueue: boolean;
+  queuePosition: number | null;
+  estimatedWaitTime: number | null;
+  playersInQueue: number | null;
   
   // Player State
   playerStatus: PlayerStatus;
@@ -69,15 +77,17 @@ export interface GameState {
 
 // Game Actions Interface
 export interface GameActions {
+  // Matchmaking
+  joinQueue: () => Promise<ServiceResponse<void>>;
+  leaveQueue: () => Promise<ServiceResponse<void>>;
+  
   // Game Management
-  createGame: (prompt: string, maxPlayers?: number, roundDuration?: number, votingDuration?: number) => Promise<ServiceResponse<Game>>;
   joinGame: (gameId: string) => Promise<ServiceResponse<void>>;
   leaveGame: () => Promise<ServiceResponse<void>>;
   setPlayerReady: (ready: boolean) => Promise<ServiceResponse<void>>;
   selectBoosterPack: (packId: string | null) => Promise<ServiceResponse<void>>;
   
   // Game Flow
-  startGame: () => Promise<ServiceResponse<void>>;
   submitDrawing: (drawingData: any, drawingUrl: string, metadata?: {
     canvasWidth?: number;
     canvasHeight?: number;
@@ -88,6 +98,7 @@ export interface GameActions {
   
   // State Management
   refreshGameState: () => Promise<ServiceResponse<void>>;
+  refreshQueueStatus: () => Promise<ServiceResponse<void>>;
   clearError: () => void;
   resetGameState: () => void;
 }
@@ -110,7 +121,10 @@ export type GameStateUpdate = Partial<GameState>;
 
 // Game Event Types for internal state management
 export type GameStateEvent = 
-  | { type: 'GAME_CREATED'; game: Game }
+  | { type: 'QUEUE_JOINED'; position?: number; waitTime?: number; playersInQueue?: number }
+  | { type: 'QUEUE_LEFT' }
+  | { type: 'QUEUE_UPDATED'; position?: number; waitTime?: number; playersInQueue?: number }
+  | { type: 'MATCH_FOUND'; game: Game }
   | { type: 'GAME_JOINED'; game: Game; participants: GameParticipant[] }
   | { type: 'GAME_LEFT' }
   | { type: 'PLAYER_READY_CHANGED'; isReady: boolean }
@@ -137,12 +151,14 @@ export const GAME_STATE_CONSTANTS = {
   
   // Minimum player requirements
   MIN_PLAYERS_TO_START: 2,
+  DEFAULT_PLAYERS_PER_GAME: 4,
   
   // Auto-transition delays (in milliseconds)
   PHASE_TRANSITION_DELAY: 1000,
   
   // Polling intervals (in milliseconds)
   GAME_STATE_REFRESH_INTERVAL: 5000,
+  QUEUE_STATUS_REFRESH_INTERVAL: 3000,
   TIMER_UPDATE_INTERVAL: 1000,
   
   // Error handling
@@ -152,6 +168,7 @@ export const GAME_STATE_CONSTANTS = {
   // Local storage keys
   STORAGE_KEY_CURRENT_GAME: 'sketchyaf_current_game',
   STORAGE_KEY_PLAYER_STATUS: 'sketchyaf_player_status',
+  STORAGE_KEY_QUEUE_STATUS: 'sketchyaf_queue_status',
   
   // Debug flags
   DEBUG_MODE: false,
@@ -220,12 +237,17 @@ export function mapPhaseToStatus(phase: GamePhase): GameStatus | null {
     case GamePhase.COMPLETED: return 'completed';
     case GamePhase.CANCELLED: return 'cancelled';
     case GamePhase.NOT_IN_GAME: return null;
+    case GamePhase.MATCHMAKING: return null; // Matchmaking is not a game status
     default: return null;
   }
 }
 
 // Helper function to determine player status based on game state
 export function determinePlayerStatus(state: Partial<GameState>): PlayerStatus {
+  if (state.isInQueue) {
+    return PlayerStatus.MATCHMAKING;
+  }
+  
   if (!state.isInGame || !state.currentGame) {
     return PlayerStatus.NOT_IN_GAME;
   }
@@ -255,6 +277,12 @@ export const initialGameState: GameState = {
   currentGame: null,
   gamePhase: GamePhase.NOT_IN_GAME,
   isInGame: false,
+  
+  // Matchmaking
+  isInQueue: false,
+  queuePosition: null,
+  estimatedWaitTime: null,
+  playersInQueue: null,
   
   // Player State
   playerStatus: PlayerStatus.NOT_IN_GAME,

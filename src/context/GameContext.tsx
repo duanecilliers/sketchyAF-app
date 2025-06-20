@@ -4,6 +4,7 @@ import { useRealtimeGame } from '../hooks/useRealtimeGame';
 import { GameService } from '../services/GameService';
 import { SubmissionService } from '../services/SubmissionService';
 import { VotingService } from '../services/VotingService';
+import { MatchmakingService } from '../services/MatchmakingService';
 import { 
   GameState, 
   GameActions, 
@@ -15,7 +16,8 @@ import {
   PHASE_TRANSITIONS,
   initialGameState,
   mapStatusToPhase,
-  determinePlayerStatus
+  determinePlayerStatus,
+  mapPhaseToStatus
 } from '../types/game-state';
 import { 
   Game, 
@@ -38,12 +40,48 @@ const GameContext = createContext<GameContextType | undefined>(undefined);
 // Game state reducer
 function gameStateReducer(state: GameState, event: GameStateEvent): GameState {
   switch (event.type) {
-    case 'GAME_CREATED':
+    case 'QUEUE_JOINED':
+      return {
+        ...state,
+        isInQueue: true,
+        queuePosition: event.position || null,
+        estimatedWaitTime: event.waitTime || null,
+        playersInQueue: event.playersInQueue || null,
+        playerStatus: PlayerStatus.MATCHMAKING,
+        gamePhase: GamePhase.MATCHMAKING,
+        error: null
+      };
+      
+    case 'QUEUE_LEFT':
+      return {
+        ...state,
+        isInQueue: false,
+        queuePosition: null,
+        estimatedWaitTime: null,
+        playersInQueue: null,
+        playerStatus: state.isInGame ? state.playerStatus : PlayerStatus.NOT_IN_GAME,
+        gamePhase: state.isInGame ? state.gamePhase : GamePhase.NOT_IN_GAME,
+        error: null
+      };
+      
+    case 'QUEUE_UPDATED':
+      return {
+        ...state,
+        queuePosition: event.position !== undefined ? event.position : state.queuePosition,
+        estimatedWaitTime: event.waitTime !== undefined ? event.waitTime : state.estimatedWaitTime,
+        playersInQueue: event.playersInQueue !== undefined ? event.playersInQueue : state.playersInQueue
+      };
+      
+    case 'MATCH_FOUND':
       return {
         ...state,
         currentGame: event.game,
         gamePhase: mapStatusToPhase(event.game.status),
         isInGame: true,
+        isInQueue: false,
+        queuePosition: null,
+        estimatedWaitTime: null,
+        playersInQueue: null,
         playerStatus: PlayerStatus.WAITING,
         isReady: false,
         selectedBoosterPack: null,
@@ -65,6 +103,7 @@ function gameStateReducer(state: GameState, event: GameStateEvent): GameState {
         currentGame: event.game,
         gamePhase: mapStatusToPhase(event.game.status),
         isInGame: true,
+        isInQueue: false,
         playerStatus: determinePlayerStatus({
           ...state,
           isInGame: true,
@@ -205,6 +244,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [state, dispatch] = useReducer(gameStateReducer, initialGameState);
   const { currentUser, isLoggedIn } = useAuth();
   const [timerInterval, setTimerInterval] = useState<NodeJS.Timeout | null>(null);
+  const [queueInterval, setQueueInterval] = useState<NodeJS.Timeout | null>(null);
   
   // Initialize real-time game service
   const { 
@@ -404,6 +444,30 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     broadcastTimerSync
   ]);
   
+  // Queue status polling
+  useEffect(() => {
+    // Clear existing interval
+    if (queueInterval) {
+      clearInterval(queueInterval);
+      setQueueInterval(null);
+    }
+    
+    // Only poll if in queue
+    if (!state.isInQueue) return;
+    
+    // Set up polling interval
+    const interval = setInterval(() => {
+      refreshQueueStatus().catch(console.error);
+    }, GAME_STATE_CONSTANTS.QUEUE_STATUS_REFRESH_INTERVAL);
+    
+    setQueueInterval(interval);
+    
+    return () => {
+      clearInterval(interval);
+      setQueueInterval(null);
+    };
+  }, [state.isInQueue]);
+  
   // Check for phase transitions based on current state
   const checkPhaseTransitions = useCallback(() => {
     if (!state.isInGame || !state.currentGame) return;
@@ -493,8 +557,8 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const userSubmission = submissionsResult.data.find(s => s.user_id === currentUser.id);
             if (userSubmission) {
               dispatch({ 
-                type: 'PLAYER_STATUS_CHANGED', 
-                status: PlayerStatus.SUBMITTED 
+                type: 'PLAYER_READY_CHANGED', 
+                isReady: true
               });
             }
           }
@@ -516,8 +580,8 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const userVote = votesResult.data.find(v => v.voter_id === currentUser.id);
             if (userVote) {
               dispatch({ 
-                type: 'PLAYER_STATUS_CHANGED', 
-                status: PlayerStatus.VOTED 
+                type: 'PLAYER_READY_CHANGED', 
+                isReady: true
               });
             }
           }
@@ -549,56 +613,143 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [state.currentGame, state.isInGame, state.gamePhase, currentUser]);
   
-  // Create a new game
-  const createGame = useCallback(async (
-    prompt: string, 
-    maxPlayers?: number, 
-    roundDuration?: number, 
-    votingDuration?: number
-  ): Promise<ServiceResponse<Game>> => {
+  // Refresh queue status
+  const refreshQueueStatus = useCallback(async (): Promise<ServiceResponse<void>> => {
+    if (!state.isInQueue) {
+      return { success: false, error: 'Not in queue', code: 'NOT_IN_QUEUE' };
+    }
+    
+    try {
+      const result = await MatchmakingService.checkQueueStatus();
+      
+      if (!result.success) {
+        // If not in queue anymore, update state
+        if (result.code === 'NOT_IN_QUEUE') {
+          dispatch({ type: 'QUEUE_LEFT' });
+        } else {
+          dispatch({ type: 'ERROR', error: result.error || 'Failed to check queue status' });
+        }
+        return result;
+      }
+      
+      // Update queue status
+      dispatch({ 
+        type: 'QUEUE_UPDATED', 
+        position: result.data?.position,
+        waitTime: result.data?.estimated_wait_time,
+        playersInQueue: result.data?.players_in_queue
+      });
+      
+      // Check if match was found
+      if (result.data?.match_found && result.data?.game_id) {
+        // Get game details
+        const gameResult = await GameService.getGame(result.data.game_id);
+        
+        if (gameResult.success && gameResult.data) {
+          // Match found, join the game
+          dispatch({ type: 'MATCH_FOUND', game: gameResult.data });
+          
+          // Join real-time game channel
+          await joinRealtimeGame(result.data.game_id);
+          
+          // Refresh game state to get all data
+          await refreshGameState();
+        }
+      }
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to refresh queue status:', error);
+      return { 
+        success: false, 
+        error: 'Failed to refresh queue status', 
+        code: 'REFRESH_FAILED' 
+      };
+    }
+  }, [state.isInQueue, joinRealtimeGame, refreshGameState]);
+  
+  // Join matchmaking queue
+  const joinQueue = useCallback(async (): Promise<ServiceResponse<void>> => {
     if (!isLoggedIn || !currentUser) {
       return { success: false, error: 'User not logged in', code: 'UNAUTHENTICATED' };
+    }
+    
+    if (state.isInQueue) {
+      return { success: true }; // Already in queue
+    }
+    
+    if (state.isInGame) {
+      return { success: false, error: 'Already in a game', code: 'ALREADY_IN_GAME' };
     }
     
     dispatch({ type: 'LOADING_STARTED' });
     
     try {
-      const result = await GameService.createGame({
-        prompt,
-        max_players: maxPlayers,
-        round_duration: roundDuration,
-        voting_duration: votingDuration
-      });
+      // Join queue in matchmaking service
+      const result = await MatchmakingService.joinQueue();
       
-      if (!result.success || !result.data) {
-        dispatch({ type: 'ERROR', error: result.error || 'Failed to create game' });
+      if (!result.success) {
+        dispatch({ type: 'ERROR', error: result.error || 'Failed to join queue' });
         return result;
       }
       
-      // Update state with new game
-      dispatch({ type: 'GAME_CREATED', game: result.data });
+      // Update state with queue status
+      dispatch({ 
+        type: 'QUEUE_JOINED', 
+        position: result.data?.position,
+        waitTime: result.data?.estimated_wait_time,
+        playersInQueue: result.data?.players_in_queue
+      });
       
-      // Join real-time game channel
-      await joinRealtimeGame(result.data.id);
+      // Start polling for queue status
+      await refreshQueueStatus();
       
-      // Refresh game state to get participants
-      await refreshGameState();
+      dispatch({ type: 'LOADING_FINISHED' });
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to join queue:', error);
+      dispatch({ 
+        type: 'ERROR', 
+        error: error instanceof Error ? error.message : 'Failed to join queue' 
+      });
+      return { 
+        success: false, 
+        error: 'Failed to join queue', 
+        code: 'JOIN_FAILED' 
+      };
+    }
+  }, [isLoggedIn, currentUser, state.isInQueue, state.isInGame, refreshQueueStatus]);
+  
+  // Leave matchmaking queue
+  const leaveQueue = useCallback(async (): Promise<ServiceResponse<void>> => {
+    if (!state.isInQueue) {
+      return { success: true }; // Not in queue
+    }
+    
+    dispatch({ type: 'LOADING_STARTED' });
+    
+    try {
+      // Leave queue in matchmaking service
+      const result = await MatchmakingService.leaveQueue();
+      
+      // Update state
+      dispatch({ type: 'QUEUE_LEFT' });
       
       dispatch({ type: 'LOADING_FINISHED' });
       return result;
     } catch (error) {
-      console.error('Failed to create game:', error);
+      console.error('Failed to leave queue:', error);
       dispatch({ 
         type: 'ERROR', 
-        error: error instanceof Error ? error.message : 'Failed to create game' 
+        error: error instanceof Error ? error.message : 'Failed to leave queue' 
       });
       return { 
         success: false, 
-        error: 'Failed to create game', 
-        code: 'CREATE_FAILED' 
+        error: 'Failed to leave queue', 
+        code: 'LEAVE_FAILED' 
       };
     }
-  }, [isLoggedIn, currentUser, joinRealtimeGame, refreshGameState]);
+  }, [state.isInQueue]);
   
   // Join an existing game
   const joinGame = useCallback(async (gameId: string): Promise<ServiceResponse<void>> => {
@@ -609,6 +760,11 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     dispatch({ type: 'LOADING_STARTED' });
     
     try {
+      // Leave queue if in queue
+      if (state.isInQueue) {
+        await leaveQueue();
+      }
+      
       // Join game in database
       const result = await GameService.joinGame({ game_id: gameId });
       
@@ -652,7 +808,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         code: 'JOIN_FAILED' 
       };
     }
-  }, [isLoggedIn, currentUser, joinRealtimeGame, refreshGameState]);
+  }, [isLoggedIn, currentUser, state.isInQueue, leaveQueue, joinRealtimeGame, refreshGameState]);
   
   // Leave current game
   const leaveGame = useCallback(async (): Promise<ServiceResponse<void>> => {
@@ -772,67 +928,6 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
   }, [state.currentGame, state.gamePhase, state.isReady, broadcastPlayerReady]);
-  
-  // Start game (transition from waiting to briefing)
-  const startGame = useCallback(async (): Promise<ServiceResponse<void>> => {
-    if (!state.currentGame) {
-      return { success: false, error: 'Not in a game', code: 'NOT_IN_GAME' };
-    }
-    
-    if (state.gamePhase !== GamePhase.WAITING) {
-      return { success: false, error: 'Game already started', code: 'INVALID_PHASE' };
-    }
-    
-    if (!currentUser || state.currentGame.created_by !== currentUser.id) {
-      return { success: false, error: 'Only game creator can start the game', code: 'UNAUTHORIZED' };
-    }
-    
-    const readyParticipants = state.participants.filter(p => p.is_ready);
-    if (readyParticipants.length < GAME_STATE_CONSTANTS.MIN_PLAYERS_TO_START) {
-      return { 
-        success: false, 
-        error: `Need at least ${GAME_STATE_CONSTANTS.MIN_PLAYERS_TO_START} ready players to start`, 
-        code: 'INSUFFICIENT_PLAYERS' 
-      };
-    }
-    
-    dispatch({ type: 'LOADING_STARTED' });
-    
-    try {
-      // Transition game status in database
-      const result = await GameService.transitionGameStatus(
-        state.currentGame.id, 
-        'briefing',
-        'waiting'
-      );
-      
-      if (!result.success) {
-        dispatch({ type: 'ERROR', error: result.error || 'Failed to start game' });
-        return result;
-      }
-      
-      // Update local state
-      dispatch({ 
-        type: 'GAME_PHASE_CHANGED', 
-        phase: GamePhase.BRIEFING,
-        startTime: Date.now()
-      });
-      
-      dispatch({ type: 'LOADING_FINISHED' });
-      return { success: true };
-    } catch (error) {
-      console.error('Failed to start game:', error);
-      dispatch({ 
-        type: 'ERROR', 
-        error: error instanceof Error ? error.message : 'Failed to start game' 
-      });
-      return { 
-        success: false, 
-        error: 'Failed to start game', 
-        code: 'START_FAILED' 
-      };
-    }
-  }, [state.currentGame, state.gamePhase, state.participants, currentUser]);
   
   // Submit drawing
   const submitDrawing = useCallback(async (
@@ -955,26 +1050,12 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     dispatch({ type: 'RESET_STATE' });
   }, []);
   
-  // Helper function to map GamePhase to GameStatus
-  const mapPhaseToStatus = useCallback((phase: GamePhase): string | null => {
-    switch (phase) {
-      case GamePhase.WAITING: return 'waiting';
-      case GamePhase.BRIEFING: return 'briefing';
-      case GamePhase.DRAWING: return 'drawing';
-      case GamePhase.VOTING: return 'voting';
-      case GamePhase.RESULTS: return 'results';
-      case GamePhase.COMPLETED: return 'completed';
-      case GamePhase.CANCELLED: return 'cancelled';
-      case GamePhase.NOT_IN_GAME: return null;
-      default: return null;
-    }
-  }, []);
-  
   // Restore game state from local storage on mount
   useEffect(() => {
     if (!isLoggedIn || !currentUser) return;
     
     const savedGameId = localStorage.getItem(GAME_STATE_CONSTANTS.STORAGE_KEY_CURRENT_GAME);
+    const savedQueueStatus = localStorage.getItem(GAME_STATE_CONSTANTS.STORAGE_KEY_QUEUE_STATUS);
     
     if (savedGameId) {
       // Attempt to rejoin the saved game
@@ -982,17 +1063,28 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Failed to rejoin saved game:', error);
         localStorage.removeItem(GAME_STATE_CONSTANTS.STORAGE_KEY_CURRENT_GAME);
       });
+    } else if (savedQueueStatus === 'true') {
+      // Attempt to rejoin the queue
+      joinQueue().catch(error => {
+        console.error('Failed to rejoin queue:', error);
+        localStorage.removeItem(GAME_STATE_CONSTANTS.STORAGE_KEY_QUEUE_STATUS);
+      });
     }
-  }, [isLoggedIn, currentUser, joinGame]);
+  }, [isLoggedIn, currentUser, joinGame, joinQueue]);
   
   // Save current game ID to local storage when it changes
   useEffect(() => {
     if (state.currentGame) {
       localStorage.setItem(GAME_STATE_CONSTANTS.STORAGE_KEY_CURRENT_GAME, state.currentGame.id);
+      localStorage.removeItem(GAME_STATE_CONSTANTS.STORAGE_KEY_QUEUE_STATUS);
+    } else if (state.isInQueue) {
+      localStorage.setItem(GAME_STATE_CONSTANTS.STORAGE_KEY_QUEUE_STATUS, 'true');
+      localStorage.removeItem(GAME_STATE_CONSTANTS.STORAGE_KEY_CURRENT_GAME);
     } else {
       localStorage.removeItem(GAME_STATE_CONSTANTS.STORAGE_KEY_CURRENT_GAME);
+      localStorage.removeItem(GAME_STATE_CONSTANTS.STORAGE_KEY_QUEUE_STATUS);
     }
-  }, [state.currentGame]);
+  }, [state.currentGame, state.isInQueue]);
   
   // Periodic game state refresh
   useEffect(() => {
@@ -1007,15 +1099,16 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
   
   // Create game actions object
   const gameActions: GameActions = {
-    createGame,
+    joinQueue,
+    leaveQueue,
     joinGame,
     leaveGame,
     setPlayerReady,
     selectBoosterPack,
-    startGame,
     submitDrawing,
     castVote,
     refreshGameState,
+    refreshQueueStatus,
     clearError,
     resetGameState
   };
@@ -1091,6 +1184,28 @@ export function usePlayerActions(): Pick<GameActions, 'setPlayerReady' | 'select
 export function useGameActions(): GameActions {
   const { actions } = useGame();
   return actions;
+}
+
+export function useQueueStatus(): {
+  isInQueue: boolean;
+  queuePosition: number | null;
+  estimatedWaitTime: number | null;
+  playersInQueue: number | null;
+  joinQueue: () => Promise<ServiceResponse<void>>;
+  leaveQueue: () => Promise<ServiceResponse<void>>;
+  refreshQueueStatus: () => Promise<ServiceResponse<void>>;
+} {
+  const { isInQueue, queuePosition, estimatedWaitTime, playersInQueue, actions } = useGame();
+  
+  return {
+    isInQueue,
+    queuePosition,
+    estimatedWaitTime,
+    playersInQueue,
+    joinQueue: actions.joinQueue,
+    leaveQueue: actions.leaveQueue,
+    refreshQueueStatus: actions.refreshQueueStatus
+  };
 }
 
 export default GameContext;

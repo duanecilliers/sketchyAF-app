@@ -19,15 +19,22 @@ import Button from '../ui/Button';
 
 interface GameLobbyProps {
   className?: string;
-  onGameStart?: () => void;
 }
 
 const GameLobby: React.FC<GameLobbyProps> = ({
-  className = '',
-  onGameStart
+  className = ''
 }) => {
-  const { gamePhase, currentGame, isInGame } = useGame();
-  const { readyCount, totalParticipants, isGameCreator } = useGameParticipants();
+  const { 
+    gamePhase, 
+    isInGame, 
+    currentGame 
+  } = useGame();
+  
+  const { 
+    readyCount, 
+    totalParticipants
+  } = useGameParticipants();
+  
   const navigate = useNavigate();
   
   // Skip rendering if not in a game or not in waiting phase
@@ -46,11 +53,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({
   ];
   
   const randomTip = tips[Math.floor(Math.random() * tips.length)];
-  
-  // Handle game start
-  const handleGameStart = () => {
-    onGameStart?.();
-  };
   
   // Handle share game
   const handleShareGame = () => {
@@ -136,7 +138,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({
           </Button>
           
           {/* Game Controls */}
-          <GameControls onStartGame={handleGameStart} />
+          <GameControls />
         </div>
         
         {/* Right Column - Players & Ready */}

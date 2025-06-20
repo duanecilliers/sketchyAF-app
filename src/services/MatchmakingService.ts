@@ -21,7 +21,11 @@ export class MatchmakingService {
     max_players?: number;
     round_duration?: number;
     categories?: string[];
-  }): Promise<ServiceResponse<void>> {
+  }): Promise<ServiceResponse<{
+    position: number;
+    estimated_wait_time: number;
+    players_in_queue: number;
+  }>> {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -60,8 +64,26 @@ export class MatchmakingService {
 
       // Try to match players immediately
       await this.processQueue();
+      
+      // Calculate queue position and estimated wait time
+      const queueEntries = Object.values(playerQueue).sort(
+        (a, b) => new Date(a.joined_at).getTime() - new Date(b.joined_at).getTime()
+      );
+      
+      const position = queueEntries.findIndex(entry => entry.user_id === user.id) + 1;
+      const playersInQueue = queueEntries.length;
+      
+      // Simple wait time estimation - would be more sophisticated in production
+      const estimatedWaitTime = Math.max(5, Math.ceil((position / GAME_CONSTANTS.DEFAULT_PLAYERS) * 30));
 
-      return { success: true };
+      return { 
+        success: true,
+        data: {
+          position,
+          estimated_wait_time: estimatedWaitTime,
+          players_in_queue: playersInQueue
+        }
+      };
     } catch (error) {
       console.error('Unexpected error joining queue:', error);
       return { success: false, error: 'Unexpected error occurred', code: 'UNKNOWN_ERROR' };
@@ -89,13 +111,15 @@ export class MatchmakingService {
   }
 
   /**
-   * Check if user is in queue
+   * Check if user is in queue and get queue status
    */
   static async checkQueueStatus(): Promise<ServiceResponse<{
     in_queue: boolean;
     position?: number;
-    joined_at?: string;
     estimated_wait_time?: number;
+    players_in_queue?: number;
+    match_found?: boolean;
+    game_id?: string;
   }>> {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -109,23 +133,40 @@ export class MatchmakingService {
         return { success: true, data: { in_queue: false } };
       }
 
+      // Process queue to check for matches
+      const matchResult = await this.processQueue();
+      
+      // Check if this user was matched
+      let matchFound = false;
+      let gameId = undefined;
+      
+      if (matchResult.success && matchResult.data) {
+        matchFound = matchResult.data.participants.includes(user.id);
+        if (matchFound) {
+          gameId = matchResult.data.game_id;
+        }
+      }
+      
       // Calculate queue position based on join time
       const queueEntries = Object.values(playerQueue).sort(
         (a, b) => new Date(a.joined_at).getTime() - new Date(b.joined_at).getTime()
       );
       
       const position = queueEntries.findIndex(entry => entry.user_id === user.id) + 1;
+      const playersInQueue = queueEntries.length;
       
       // Estimate wait time (very simple calculation - would be more sophisticated in production)
-      const estimatedWaitTime = Math.max(5, position * 10); // seconds
+      const estimatedWaitTime = Math.max(5, Math.ceil((position / GAME_CONSTANTS.DEFAULT_PLAYERS) * 30));
       
       return { 
         success: true, 
         data: { 
           in_queue: true,
           position,
-          joined_at: playerQueue[user.id].joined_at,
-          estimated_wait_time: estimatedWaitTime
+          estimated_wait_time: estimatedWaitTime,
+          players_in_queue: playersInQueue,
+          match_found: matchFound,
+          game_id: gameId
         } 
       };
     } catch (error) {
@@ -137,14 +178,21 @@ export class MatchmakingService {
   /**
    * Process the queue and match players
    */
-  private static async processQueue(): Promise<void> {
+  private static async processQueue(): Promise<ServiceResponse<MatchmakingResult>> {
     try {
       // Get all players in queue
       const queueEntries = Object.values(playerQueue);
       
-      if (queueEntries.length < GAME_CONSTANTS.MIN_PLAYERS) {
+      if (queueEntries.length < GAME_CONSTANTS.DEFAULT_PLAYERS) {
         // Not enough players to start a game
-        return;
+        return { 
+          success: true, 
+          data: {
+            game_id: '',
+            participants: [],
+            estimated_start_time: ''
+          }
+        };
       }
 
       // Simple matching algorithm - group players by join time
@@ -162,13 +210,26 @@ export class MatchmakingService {
           playersToMatch.forEach(player => {
             delete playerQueue[player.user_id];
           });
-          
-          // Notify players about the match (would use PubNub in production)
-          console.log('Match created:', result.data);
         }
+        
+        return result;
       }
+      
+      return { 
+        success: true, 
+        data: {
+          game_id: '',
+          participants: [],
+          estimated_start_time: ''
+        }
+      };
     } catch (error) {
       console.error('Error processing matchmaking queue:', error);
+      return { 
+        success: false, 
+        error: 'Failed to process matchmaking queue', 
+        code: 'PROCESSING_ERROR' 
+      };
     }
   }
 
