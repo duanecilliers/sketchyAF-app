@@ -9,7 +9,8 @@ import {
   X, 
   Wifi, 
   Share2,
-  Loader2
+  Loader2,
+  AlertCircle
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import Button from '../../components/ui/Button';
@@ -18,43 +19,6 @@ import { useGame, useQueueStatus } from '../../context/GameContext';
 import { GamePhase } from '../../types/game-state';
 import GameLobby from '../../components/game/GameLobby';
 
-// Mock data for demo purposes
-const TIPS_AND_TRIVIA = [
-  "💡 Tip: The worse your drawing, the funnier it gets!",
-  "🎨 Did you know? 73% of SketchyAF winners can't draw stick figures properly.",
-  "⚡ Pro tip: Use booster packs for maximum chaos and confusion.",
-  "🏆 Fun fact: The most voted drawing was literally just a potato with legs.",
-  "🎭 Remember: Artistic skill is optional, creativity is everything!",
-  "🌟 Tip: Sometimes the best strategy is to embrace the chaos.",
-];
-
-const RECENT_SKETCHES = [
-  {
-    id: 1,
-    text: "🐱 Someone just drew 'A cat having an existential crisis'",
-    drawingUrl: 'https://images.pexels.com/photos/1092364/pexels-photo-1092364.jpeg?auto=compress&cs=tinysrgb&w=150',
-    drawingId: 1
-  },
-  {
-    id: 2,
-    text: "🚀 Winner: 'Astronaut eating spaghetti in zero gravity'",
-    drawingUrl: 'https://images.pexels.com/photos/1887946/pexels-photo-1887946.jpeg?auto=compress&cs=tinysrgb&w=150',
-    drawingId: 2
-  },
-  {
-    id: 3,
-    text: "🦄 Epic sketch: 'Unicorn working in customer service'",
-    drawingUrl: 'https://images.pexels.com/photos/1616403/pexels-photo-1616403.jpeg?auto=compress&cs=tinysrgb&w=150',
-    drawingId: 3
-  },
-  {
-    id: 4,
-    text: "🍕 Masterpiece: 'Pizza slice contemplating life choices'",
-    drawingUrl: 'https://images.pexels.com/photos/1266302/pexels-photo-1266302.jpeg?auto=compress&cs=tinysrgb&w=150',
-    drawingId: 4
-  },
-];
-
 const LobbyScreen: React.FC = () => {
   const navigate = useNavigate();
   const { 
@@ -62,7 +26,8 @@ const LobbyScreen: React.FC = () => {
     gamePhase, 
     currentGame, 
     connectionStatus, 
-    actions 
+    actions,
+    error: gameError
   } = useGame();
   
   const {
@@ -75,23 +40,26 @@ const LobbyScreen: React.FC = () => {
   } = useQueueStatus();
   
   const [currentTip, setCurrentTip] = useState(0);
-  const [currentSketch, setCurrentSketch] = useState(0);
   const [showMatchFound, setShowMatchFound] = useState(false);
+  const [isJoiningQueue, setIsJoiningQueue] = useState(false);
+  const [isLeavingQueue, setIsLeavingQueue] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  
+  // Tips for the waiting screen
+  const TIPS_AND_TRIVIA = [
+    "💡 Tip: The worse your drawing, the funnier it gets!",
+    "🎨 Did you know? 73% of SketchyAF winners can't draw stick figures properly.",
+    "⚡ Pro tip: Use booster packs for maximum chaos and confusion.",
+    "🏆 Fun fact: The most voted drawing was literally just a potato with legs.",
+    "🎭 Remember: Artistic skill is optional, creativity is everything!",
+    "🌟 Tip: Sometimes the best strategy is to embrace the chaos."
+  ];
   
   // Rotate tips every 4 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       setCurrentTip(prev => (prev + 1) % TIPS_AND_TRIVIA.length);
     }, 4000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  // Rotate recent sketches every 6 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentSketch(prev => (prev + 1) % RECENT_SKETCHES.length);
-    }, 6000);
 
     return () => clearInterval(interval);
   }, []);
@@ -122,28 +90,62 @@ const LobbyScreen: React.FC = () => {
     }
   }, [isInGame, gamePhase, currentGame, navigate]);
   
-  // Simulate match found after some time (for demo)
+  // Check for match found
   useEffect(() => {
-    if (isInQueue && queuePosition === 1) {
+    if (isInQueue && queuePosition === 1 && !showMatchFound) {
+      setShowMatchFound(true);
+    }
+  }, [isInQueue, queuePosition, showMatchFound]);
+  
+  // Clear local error after 5 seconds
+  useEffect(() => {
+    if (localError) {
       const timer = setTimeout(() => {
-        setShowMatchFound(true);
-      }, 3000);
+        setLocalError(null);
+      }, 5000);
       
       return () => clearTimeout(timer);
     }
-  }, [isInQueue, queuePosition]);
+  }, [localError]);
 
-  const handleExitQueue = () => {
+  const handleExitQueue = async () => {
     if (isInGame) {
-      actions.leaveGame();
+      setIsLeavingQueue(true);
+      try {
+        await actions.leaveGame();
+      } catch (error) {
+        setLocalError('Failed to leave game. Please try again.');
+      } finally {
+        setIsLeavingQueue(false);
+      }
     } else if (isInQueue) {
-      leaveQueue();
+      setIsLeavingQueue(true);
+      try {
+        await leaveQueue();
+      } catch (error) {
+        setLocalError('Failed to leave queue. Please try again.');
+      } finally {
+        setIsLeavingQueue(false);
+      }
     }
     navigate('/');
   };
 
   const handleJoinQueue = async () => {
-    await joinQueue();
+    setIsJoiningQueue(true);
+    setLocalError(null);
+    
+    try {
+      const result = await joinQueue();
+      if (!result.success) {
+        setLocalError(result.error || 'Failed to join queue. Please try again.');
+      }
+    } catch (error) {
+      setLocalError('Failed to join queue. Please try again.');
+      console.error('Error joining queue:', error);
+    } finally {
+      setIsJoiningQueue(false);
+    }
   };
 
   const handleAcceptMatch = () => {
@@ -151,27 +153,37 @@ const LobbyScreen: React.FC = () => {
     // Match acceptance is handled automatically by the matchmaking service
   };
 
-  const handleDeclineMatch = () => {
+  const handleDeclineMatch = async () => {
     setShowMatchFound(false);
-    leaveQueue();
+    try {
+      await leaveQueue();
+    } catch (error) {
+      setLocalError('Failed to decline match. Please try again.');
+      console.error('Error declining match:', error);
+    }
   };
 
   const handleInviteFriend = () => {
-    // In real app, this would open share dialog
     if (navigator.share) {
       navigator.share({
         title: 'Join me in SketchyAF!',
         text: 'Come draw terrible sketches with me!',
         url: window.location.origin,
+      }).catch(error => {
+        console.error('Error sharing:', error);
       });
     } else {
       // Fallback for desktop
-      navigator.clipboard.writeText(window.location.origin);
-      alert('Invite link copied to clipboard!');
+      navigator.clipboard.writeText(window.location.origin)
+        .then(() => {
+          setLocalError('Invite link copied to clipboard!');
+        })
+        .catch(error => {
+          console.error('Error copying to clipboard:', error);
+          setLocalError('Failed to copy invite link.');
+        });
     }
   };
-
-  const currentSketchData = RECENT_SKETCHES[currentSketch];
 
   return (
     <>
@@ -201,12 +213,32 @@ const LobbyScreen: React.FC = () => {
             variant="tertiary" 
             size="sm" 
             onClick={handleExitQueue}
+            disabled={isLeavingQueue}
             className="text-medium-gray"
           >
-            <X size={18} className="mr-1" />
+            {isLeavingQueue ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : (
+              <X size={18} className="mr-1" />
+            )}
             {isInGame ? 'Leave Game' : isInQueue ? 'Exit Queue' : 'Exit Lobby'}
           </Button>
         </div>
+
+        {/* Error display */}
+        {(gameError || localError) && (
+          <div className="px-4 mb-4">
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="bg-red/10 border border-red rounded-lg p-3 flex items-start"
+            >
+              <AlertCircle size={20} className="text-red mr-2 flex-shrink-0 mt-1" />
+              <p className="text-red">{gameError || localError}</p>
+            </motion.div>
+          </div>
+        )}
 
         {/* Main Content */}
         <div className="flex-1 flex flex-col justify-center px-4 pb-8">
@@ -315,6 +347,29 @@ const LobbyScreen: React.FC = () => {
                     ~{estimatedWaitTime || '...'} seconds
                   </motion.p>
                 </div>
+                
+                {/* Leave Queue Button */}
+                <div className="mt-6">
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    onClick={handleExitQueue}
+                    disabled={isLeavingQueue}
+                    className="w-full"
+                  >
+                    {isLeavingQueue ? (
+                      <div className="flex items-center justify-center">
+                        <Loader2 size={18} className="mr-2 animate-spin" />
+                        <span>Leaving Queue...</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center">
+                        <X size={18} className="mr-2" />
+                        <span>Leave Queue</span>
+                      </div>
+                    )}
+                  </Button>
+                </div>
               </motion.div>
 
               {/* Tips & Trivia */}
@@ -340,57 +395,6 @@ const LobbyScreen: React.FC = () => {
                   >
                     {TIPS_AND_TRIVIA[currentTip]}
                   </motion.p>
-                </AnimatePresence>
-              </motion.div>
-
-              {/* Recent Activity */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, delay: 0.4 }}
-                className="bg-turquoise/20 rounded-lg border-2 border-turquoise p-4 hand-drawn"
-              >
-                <h3 className="font-heading font-semibold text-dark mb-3">🎯 Recent Activity</h3>
-                
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={currentSketch}
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -20 }}
-                    transition={{ duration: 0.4 }}
-                    className="flex items-start space-x-3"
-                  >
-                    {/* Thumbnail */}
-                    <Link 
-                      to={`/art/${currentSketchData.drawingId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex-shrink-0 group"
-                    >
-                      <motion.img 
-                        src={currentSketchData.drawingUrl} 
-                        alt="Recent winning sketch"
-                        className="w-12 h-12 rounded-lg border-2 border-turquoise object-cover group-hover:scale-110 transition-transform duration-200"
-                        whileHover={{ scale: 1.1 }}
-                      />
-                    </Link>
-                    
-                    {/* Text */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-dark-gray text-sm">
-                        {currentSketchData.text}
-                      </p>
-                      <Link 
-                        to={`/art/${currentSketchData.drawingId}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-turquoise hover:underline inline-flex items-center mt-1"
-                      >
-                        View artwork →
-                      </Link>
-                    </div>
-                  </motion.div>
                 </AnimatePresence>
               </motion.div>
 
@@ -433,10 +437,20 @@ const LobbyScreen: React.FC = () => {
                     variant="primary" 
                     size="lg" 
                     onClick={handleJoinQueue}
-                    className="animate-pulse"
+                    disabled={isJoiningQueue}
+                    className={isJoiningQueue ? "" : "animate-pulse"}
                   >
-                    <Users size={20} className="mr-2" />
-                    Find Players
+                    {isJoiningQueue ? (
+                      <div className="flex items-center justify-center">
+                        <Loader2 size={20} className="mr-2 animate-spin" />
+                        <span>Joining Queue...</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center">
+                        <Users size={20} className="mr-2" />
+                        <span>Find Players</span>
+                      </div>
+                    )}
                   </Button>
                 </div>
               </motion.div>
@@ -466,64 +480,13 @@ const LobbyScreen: React.FC = () => {
                   </motion.p>
                 </AnimatePresence>
               </motion.div>
-
-              {/* Recent Activity */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, delay: 0.4 }}
-                className="bg-turquoise/20 rounded-lg border-2 border-turquoise p-4 hand-drawn"
-              >
-                <h3 className="font-heading font-semibold text-dark mb-3">🎯 Recent Activity</h3>
-                
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={currentSketch}
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -20 }}
-                    transition={{ duration: 0.4 }}
-                    className="flex items-start space-x-3"
-                  >
-                    {/* Thumbnail */}
-                    <Link 
-                      to={`/art/${currentSketchData.drawingId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex-shrink-0 group"
-                    >
-                      <motion.img 
-                        src={currentSketchData.drawingUrl} 
-                        alt="Recent winning sketch"
-                        className="w-12 h-12 rounded-lg border-2 border-turquoise object-cover group-hover:scale-110 transition-transform duration-200"
-                        whileHover={{ scale: 1.1 }}
-                      />
-                    </Link>
-                    
-                    {/* Text */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-dark-gray text-sm">
-                        {currentSketchData.text}
-                      </p>
-                      <Link 
-                        to={`/art/${currentSketchData.drawingId}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-turquoise hover:underline inline-flex items-center mt-1"
-                      >
-                        View artwork →
-                      </Link>
-                    </div>
-                  </motion.div>
-                </AnimatePresence>
-              </motion.div>
             </div>
           )}
         </div>
 
         {/* Match Found Modal */}
         <AnimatePresence>
-          {showMatchFound\ && (
+          {showMatchFound && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -557,7 +520,7 @@ const LobbyScreen: React.FC = () => {
                     Match Found!
                   </h2>
                   <p className="text-medium-gray mb-6">
-                    4 players ready to create chaos!
+                    {playersInQueue} players ready to create chaos!
                   </p>
                   
                   <div className="flex gap-3">

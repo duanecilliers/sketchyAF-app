@@ -47,15 +47,16 @@ const GameCreationForm: React.FC<GameCreationFormProps> = ({
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5 }}
       className={`bg-white rounded-lg border-2 border-dark p-6 hand-drawn shadow-[8px_8px_0px_0px_rgba(0,0,0,0.8)] ${className}`}
     >
-      <h2 className="font-heading font-bold text-2xl text-dark mb-4 flex items-center">
+      <h2 className="font-heading font-bold text-2xl mb-6 flex items-center">
         <Pencil size={24} className="mr-2 text-primary" />
         Create a New Game
       </h2>
       
       {error && (
-        <div className="mb-4 p-3 bg-red/10 border border-red rounded-lg text-red text-sm">
+        <div className="mb-6 p-3 bg-red/10 border border-red rounded-lg text-red text-sm">
           {error}
         </div>
       )}
