@@ -1,9 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Clock, Users, Trophy, Lightbulb, X, Wifi, Share2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { 
+  Clock, 
+  Users, 
+  Trophy, 
+  Lightbulb, 
+  X, 
+  Wifi, 
+  Share2,
+  Plus,
+  Search
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import Button from '../../components/ui/Button';
 import Seo from '../../components/utils/Seo';
+import { useGame } from '../../context/GameContext';
+import { GamePhase } from '../../types/game-state';
+import GameCreationForm from '../../components/game/GameCreationForm';
+import GameBrowseList from '../../components/game/GameBrowseList';
+import GameLobby from '../../components/game/GameLobby';
 
 // Mock data for demo purposes
 const TIPS_AND_TRIVIA = [
@@ -43,27 +59,19 @@ const RECENT_SKETCHES = [
 ];
 
 const LobbyScreen: React.FC = () => {
-  const [queuePosition, setQueuePosition] = useState(3);
-  const [playersInQueue, setPlayersInQueue] = useState(47);
-  const [estimatedWaitTime, setEstimatedWaitTime] = useState(32);
+  const navigate = useNavigate();
+  const { 
+    isInGame, 
+    gamePhase, 
+    currentGame, 
+    connectionStatus, 
+    actions 
+  } = useGame();
+  
   const [currentTip, setCurrentTip] = useState(0);
   const [currentSketch, setCurrentSketch] = useState(0);
-  const [showMatchFound, setShowMatchFound] = useState(false);
-
-  // Simulate queue updates
-  useEffect(() => {
-    const interval = setInterval(() => {
-      // Randomly update queue stats
-      if (Math.random() > 0.7) {
-        setQueuePosition(prev => Math.max(1, prev + (Math.random() > 0.6 ? -1 : 1)));
-        setPlayersInQueue(prev => prev + Math.floor(Math.random() * 6) - 2);
-        setEstimatedWaitTime(prev => Math.max(5, prev + Math.floor(Math.random() * 10) - 4));
-      }
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, []);
-
+  const [showCreateGame, setShowCreateGame] = useState(false);
+  
   // Rotate tips every 4 seconds
   useEffect(() => {
     const interval = setInterval(() => {
@@ -81,32 +89,38 @@ const LobbyScreen: React.FC = () => {
 
     return () => clearInterval(interval);
   }, []);
-
-  // Simulate match found after some time (for demo)
+  
+  // Navigate to appropriate screen based on game phase
   useEffect(() => {
-    const timer = setTimeout(() => {
-      if (queuePosition <= 1) {
-        setShowMatchFound(true);
+    if (isInGame && currentGame) {
+      switch (gamePhase) {
+        case GamePhase.BRIEFING:
+          navigate('/uiux/pre-round');
+          break;
+        case GamePhase.DRAWING:
+          navigate('/uiux/drawing');
+          break;
+        case GamePhase.VOTING:
+          navigate('/uiux/voting');
+          break;
+        case GamePhase.RESULTS:
+          navigate('/uiux/results');
+          break;
+        case GamePhase.COMPLETED:
+          navigate('/uiux/post-game');
+          break;
+        default:
+          // Stay on lobby screen for WAITING phase
+          break;
       }
-    }, 8000);
-
-    return () => clearTimeout(timer);
-  }, [queuePosition]);
-
-  const handleAcceptMatch = () => {
-    // In real app, this would navigate to pre-round briefing
-    console.log('Match accepted!');
-    setShowMatchFound(false);
-  };
-
-  const handleDeclineMatch = () => {
-    setShowMatchFound(false);
-    setQueuePosition(prev => prev + Math.floor(Math.random() * 3) + 1);
-  };
+    }
+  }, [isInGame, gamePhase, currentGame, navigate]);
 
   const handleExitQueue = () => {
-    // In real app, this would navigate back to main menu
-    window.history.back();
+    if (isInGame) {
+      actions.leaveGame();
+    }
+    navigate('/');
   };
 
   const handleInviteFriend = () => {
@@ -123,22 +137,46 @@ const LobbyScreen: React.FC = () => {
       alert('Invite link copied to clipboard!');
     }
   };
+  
+  // Handle game creation
+  const handleGameCreated = (gameId: string) => {
+    setShowCreateGame(false);
+  };
+  
+  // Handle joining a game
+  const handleJoinGame = (gameId: string) => {
+    // Navigation will happen automatically via the useEffect
+  };
+  
+  // Handle game start
+  const handleGameStart = () => {
+    // Navigation will happen automatically via the useEffect
+  };
 
   const currentSketchData = RECENT_SKETCHES[currentSketch];
 
   return (
     <>
       <Seo 
-        title="Finding Players... | SketchyAF"
-        description="Joining a SketchyAF drawing game - finding other players to create chaos with!"
+        title="Game Lobby | SketchyAF"
+        description="Join or create a SketchyAF drawing game - find other players to create chaos with!"
       />
       
       <div className="min-h-screen bg-gradient-to-br from-cream via-turquoise/20 to-pink/20 flex flex-col">
         {/* Header */}
         <div className="p-4 flex justify-between items-center">
           <div className="flex items-center">
-            <Wifi className="w-5 h-5 text-green mr-2" />
-            <span className="text-sm font-heading font-bold text-dark">Connected</span>
+            <Wifi className={`w-5 h-5 mr-2 ${
+              connectionStatus === 'connected' ? 'text-green' :
+              connectionStatus === 'connecting' || connectionStatus === 'reconnecting' ? 'text-orange animate-pulse' :
+              'text-red'
+            }`} />
+            <span className="text-sm font-heading font-bold text-dark">
+              {connectionStatus === 'connected' ? 'Connected' :
+               connectionStatus === 'connecting' ? 'Connecting...' :
+               connectionStatus === 'reconnecting' ? 'Reconnecting...' :
+               'Disconnected'}
+            </span>
           </div>
           
           <Button 
@@ -148,278 +186,148 @@ const LobbyScreen: React.FC = () => {
             className="text-medium-gray"
           >
             <X size={18} className="mr-1" />
-            Exit Queue
+            {isInGame ? 'Leave Game' : 'Exit Lobby'}
           </Button>
         </div>
 
         {/* Main Content */}
         <div className="flex-1 flex flex-col justify-center px-4 pb-8">
-          <div className="max-w-md mx-auto w-full space-y-6">
-            
-            {/* Queue Status Card */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-              className="bg-white rounded-lg border-2 border-dark p-6 hand-drawn shadow-[8px_8px_0px_0px_rgba(0,0,0,0.8)]"
-            >
-              <div className="text-center mb-6">
-                <h1 className="font-heading font-bold text-2xl text-dark mb-2 transform rotate-[-1deg]">
-                  Finding Players...
-                </h1>
-                <p className="text-medium-gray">Get ready for some sketchy chaos!</p>
-              </div>
-
-              {/* Animated Loading Doodles */}
-              <div className="flex justify-center mb-6">
-                <div className="relative">
-                  <motion.div
-                    animate={{ 
-                      rotate: 360,
-                      scale: [1, 1.1, 1]
-                    }}
-                    transition={{ 
-                      rotate: { duration: 4, repeat: Infinity, ease: "linear" },
-                      scale: { duration: 2, repeat: Infinity }
-                    }}
-                    className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full"
-                  />
-                  <motion.div
-                    animate={{ 
-                      x: [-20, 20, -20],
-                      y: [-10, 10, -10]
-                    }}
-                    transition={{ 
-                      duration: 3, 
-                      repeat: Infinity,
-                      ease: "easeInOut"
-                    }}
-                    className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-2xl"
-                  >
-                    🎨
-                  </motion.div>
-                </div>
-              </div>
-
-              {/* Queue Stats */}
-              <div className="grid grid-cols-2 gap-4 mb-6">
-                <motion.div 
-                  className="bg-secondary/10 p-3 rounded-lg text-center border border-secondary/30"
-                  whileHover={{ scale: 1.05 }}
+          {isInGame && currentGame ? (
+            // In-game lobby
+            <GameLobby onGameStart={handleGameStart} />
+          ) : (
+            // Game browser/creator
+            <div className="max-w-6xl mx-auto w-full space-y-6">
+              {/* Create/Browse Tabs */}
+              <div className="flex border-b border-light-gray">
+                <button
+                  onClick={() => setShowCreateGame(false)}
+                  className={`flex-1 py-3 px-4 font-heading font-semibold text-lg ${
+                    !showCreateGame 
+                      ? 'text-primary border-b-2 border-primary' 
+                      : 'text-medium-gray hover:text-dark'
+                  }`}
                 >
-                  <div className="flex items-center justify-center mb-1">
-                    <Trophy size={16} className="text-secondary mr-1" />
-                    <span className="text-xs text-medium-gray">Position</span>
-                  </div>
-                  <motion.p 
-                    key={queuePosition}
-                    initial={{ scale: 1.2, color: "#22a7e5" }}
-                    animate={{ scale: 1, color: "#2d2d2d" }}
-                    className="font-heading font-bold text-xl"
-                  >
-                    #{queuePosition}
-                  </motion.p>
-                </motion.div>
-
-                <motion.div 
-                  className="bg-green/10 p-3 rounded-lg text-center border border-green/30"
-                  whileHover={{ scale: 1.05 }}
+                  <Search size={20} className="inline-block mr-2" />
+                  Browse Games
+                </button>
+                <button
+                  onClick={() => setShowCreateGame(true)}
+                  className={`flex-1 py-3 px-4 font-heading font-semibold text-lg ${
+                    showCreateGame 
+                      ? 'text-primary border-b-2 border-primary' 
+                      : 'text-medium-gray hover:text-dark'
+                  }`}
                 >
-                  <div className="flex items-center justify-center mb-1">
-                    <Users size={16} className="text-green mr-1" />
-                    <span className="text-xs text-medium-gray">In Queue</span>
-                  </div>
-                  <motion.p 
-                    key={playersInQueue}
-                    initial={{ scale: 1.2, color: "#7bc043" }}
-                    animate={{ scale: 1, color: "#2d2d2d" }}
-                    className="font-heading font-bold text-xl"
-                  >
-                    {playersInQueue}
-                  </motion.p>
-                </motion.div>
-              </div>
-
-              {/* Estimated Wait Time */}
-              <div className="bg-accent/10 p-4 rounded-lg border border-accent/30 text-center">
-                <div className="flex items-center justify-center mb-2">
-                  <Clock size={18} className="text-accent mr-2" />
-                  <span className="text-sm text-medium-gray">Estimated Wait</span>
-                </div>
-                <motion.p 
-                  key={estimatedWaitTime}
-                  initial={{ scale: 1.1 }}
-                  animate={{ scale: 1 }}
-                  className="font-heading font-bold text-lg"
-                >
-                  ~{estimatedWaitTime} seconds
-                </motion.p>
-              </div>
-            </motion.div>
-
-            {/* Tips & Trivia */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 0.2 }}
-              className="bg-pink/20 rounded-lg border-2 border-pink p-4 hand-drawn"
-            >
-              <div className="flex items-center mb-2">
-                <Lightbulb size={18} className="text-dark mr-2" />
-                <span className="font-heading font-semibold text-dark">While You Wait...</span>
+                  <Plus size={20} className="inline-block mr-2" />
+                  Create Game
+                </button>
               </div>
               
-              <AnimatePresence mode="wait">
-                <motion.p
-                  key={currentTip}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.3 }}
-                  className="text-dark-gray"
-                >
-                  {TIPS_AND_TRIVIA[currentTip]}
-                </motion.p>
-              </AnimatePresence>
-            </motion.div>
-
-            {/* Recent Activity */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 0.4 }}
-              className="bg-turquoise/20 rounded-lg border-2 border-turquoise p-4 hand-drawn"
-            >
-              <h3 className="font-heading font-semibold text-dark mb-3">🎯 Recent Activity</h3>
+              {/* Create or Browse Content */}
+              {showCreateGame ? (
+                <GameCreationForm onGameCreated={handleGameCreated} />
+              ) : (
+                <GameBrowseList onJoinGame={handleJoinGame} />
+              )}
               
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={currentSketch}
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  transition={{ duration: 0.4 }}
-                  className="flex items-start space-x-3"
-                >
-                  {/* Thumbnail */}
-                  <Link 
-                    to={`/art/${currentSketchData.drawingId}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex-shrink-0 group"
+              {/* Tips & Trivia */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: 0.2 }}
+                className="bg-pink/20 rounded-lg border-2 border-pink p-4 hand-drawn"
+              >
+                <div className="flex items-center mb-2">
+                  <Lightbulb size={18} className="text-dark mr-2" />
+                  <span className="font-heading font-semibold text-dark">While You Wait...</span>
+                </div>
+                
+                <AnimatePresence mode="wait">
+                  <motion.p
+                    key={currentTip}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.3 }}
+                    className="text-dark-gray"
                   >
-                    <motion.img 
-                      src={currentSketchData.drawingUrl} 
-                      alt="Recent winning sketch"
-                      className="w-12 h-12 rounded-lg border-2 border-turquoise object-cover group-hover:scale-110 transition-transform duration-200"
-                      whileHover={{ scale: 1.1 }}
-                    />
-                  </Link>
-                  
-                  {/* Text */}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-dark-gray text-sm">
-                      {currentSketchData.text}
-                    </p>
+                    {TIPS_AND_TRIVIA[currentTip]}
+                  </motion.p>
+                </AnimatePresence>
+              </motion.div>
+
+              {/* Recent Activity */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: 0.4 }}
+                className="bg-turquoise/20 rounded-lg border-2 border-turquoise p-4 hand-drawn"
+              >
+                <h3 className="font-heading font-semibold text-dark mb-3">🎯 Recent Activity</h3>
+                
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={currentSketch}
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.4 }}
+                    className="flex items-start space-x-3"
+                  >
+                    {/* Thumbnail */}
                     <Link 
                       to={`/art/${currentSketchData.drawingId}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-xs text-turquoise hover:underline inline-flex items-center mt-1"
+                      className="flex-shrink-0 group"
                     >
-                      View artwork →
+                      <motion.img 
+                        src={currentSketchData.drawingUrl} 
+                        alt="Recent winning sketch"
+                        className="w-12 h-12 rounded-lg border-2 border-turquoise object-cover group-hover:scale-110 transition-transform duration-200"
+                        whileHover={{ scale: 1.1 }}
+                      />
                     </Link>
-                  </div>
-                </motion.div>
-              </AnimatePresence>
-            </motion.div>
-
-            {/* Invite Friend Button */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 0.6 }}
-              className="text-center"
-            >
-              <Button 
-                variant="secondary" 
-                size="sm" 
-                onClick={handleInviteFriend}
-                className="w-full"
-              >
-                <Share2 size={18} className="mr-2" />
-                Invite a Friend
-              </Button>
-            </motion.div>
-          </div>
-        </div>
-
-        {/* Match Found Modal */}
-        <AnimatePresence>
-          {showMatchFound && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50"
-            >
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.8, y: 20 }}
-                transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                className="bg-white rounded-lg border-2 border-dark p-6 max-w-sm w-full hand-drawn shadow-[8px_8px_0px_0px_rgba(0,0,0,0.8)]"
-              >
-                <div className="text-center">
-                  <motion.div
-                    animate={{ 
-                      scale: [1, 1.2, 1],
-                      rotate: [0, 5, -5, 0]
-                    }}
-                    transition={{ 
-                      duration: 0.6,
-                      repeat: Infinity,
-                      repeatDelay: 1
-                    }}
-                    className="text-4xl mb-4"
-                  >
-                    🎉
+                    
+                    {/* Text */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-dark-gray text-sm">
+                        {currentSketchData.text}
+                      </p>
+                      <Link 
+                        to={`/art/${currentSketchData.drawingId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-turquoise hover:underline inline-flex items-center mt-1"
+                      >
+                        View artwork →
+                      </Link>
+                    </div>
                   </motion.div>
-                  
-                  <h2 className="font-heading font-bold text-2xl text-dark mb-2 transform rotate-[-1deg]">
-                    Match Found!
-                  </h2>
-                  <p className="text-medium-gray mb-6">
-                    4 players ready to create chaos!
-                  </p>
-                  
-                  <div className="flex gap-3">
-                    <Button 
-                      variant="primary" 
-                      size="sm" 
-                      onClick={handleAcceptMatch}
-                      className="flex-1"
-                    >
-                      Accept
-                    </Button>
-                    <Button 
-                      variant="secondary" 
-                      size="sm" 
-                      onClick={handleDeclineMatch}
-                      className="flex-1"
-                    >
-                      Decline
-                    </Button>
-                  </div>
-                  
-                  <p className="text-xs text-medium-gray mt-3">
-                    Auto-accepting in 10s...
-                  </p>
-                </div>
+                </AnimatePresence>
               </motion.div>
-            </motion.div>
+
+              {/* Invite Friend Button */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: 0.6 }}
+                className="text-center"
+              >
+                <Button 
+                  variant="secondary" 
+                  size="sm" 
+                  onClick={handleInviteFriend}
+                  className="w-full"
+                >
+                  <Share2 size={18} className="mr-2" />
+                  Invite a Friend
+                </Button>
+              </motion.div>
+            </div>
           )}
-        </AnimatePresence>
+        </div>
       </div>
     </>
   );
