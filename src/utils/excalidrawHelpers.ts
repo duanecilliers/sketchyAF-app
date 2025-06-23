@@ -190,3 +190,70 @@ export function createExcalidrawFile(options: {
     created: timestamp,
   };
 }
+
+/**
+ * Export Excalidraw drawing to PNG image
+ * 
+ * @param excalidrawAPI - The Excalidraw API instance
+ * @returns Promise resolving to a data URL of the exported image
+ */
+export async function exportToPng(excalidrawAPI: any): Promise<string> {
+  if (!excalidrawAPI || !excalidrawAPI.exportToBlob) {
+    throw new Error('Excalidraw API not available or missing exportToBlob method');
+  }
+  
+  try {
+    const blob = await excalidrawAPI.exportToBlob({
+      mimeType: 'image/png',
+      quality: 0.92,
+      exportWithDarkMode: false,
+      exportEmbedScene: false,
+      exportBackground: true,
+      exportPadding: 10,
+    });
+    
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.error('Error exporting drawing to PNG:', error);
+    throw error;
+  }
+}
+
+/**
+ * Calculate drawing time based on element timestamps
+ * 
+ * @param elements - Array of Excalidraw elements
+ * @returns Drawing time in seconds
+ */
+export function calculateDrawingTime(elements: any[]): number {
+  if (!elements || elements.length === 0) {
+    return 0;
+  }
+  
+  // Find earliest and latest timestamps
+  let earliestTimestamp = Number.MAX_SAFE_INTEGER;
+  let latestTimestamp = 0;
+  
+  elements.forEach(element => {
+    if (element.timestamp && element.timestamp < earliestTimestamp) {
+      earliestTimestamp = element.timestamp;
+    }
+    if (element.updated && element.updated > latestTimestamp) {
+      latestTimestamp = element.updated;
+    }
+  });
+  
+  // If no valid timestamps found, return 0
+  if (earliestTimestamp === Number.MAX_SAFE_INTEGER || latestTimestamp === 0) {
+    return 0;
+  }
+  
+  // Calculate time difference in seconds
+  const timeDiffMs = latestTimestamp - earliestTimestamp;
+  return Math.round(timeDiffMs / 1000);
+}

@@ -13,14 +13,21 @@ import {
   EXCALIDRAW_DEFAULTS
 } from '../../utils/excalidrawHelpers';
 import { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types/types';
+import { useGame } from '../../context/GameContext';
 
 interface AssetDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   excalidrawAPI: ExcalidrawImperativeAPI | null;
+  onAssetUsed?: (assetFilename: string, position?: { x: number; y: number }) => void;
 }
 
-const AssetDrawer: React.FC<AssetDrawerProps> = ({ isOpen, onClose, excalidrawAPI }) => {
+const AssetDrawer: React.FC<AssetDrawerProps> = ({ 
+  isOpen, 
+  onClose, 
+  excalidrawAPI,
+  onAssetUsed 
+}) => {
   const [state, setState] = useState<AssetDrawerState>({
     isOpen: false,
     selectedCollection: null,
@@ -32,6 +39,9 @@ const AssetDrawer: React.FC<AssetDrawerProps> = ({ isOpen, onClose, excalidrawAP
   const [collections, setCollections] = useState<ImageCollection[]>([]);
   const [filteredAssets, setFilteredAssets] = useState<ImageAsset[]>([]);
   const [convertingAsset, setConvertingAsset] = useState<string | null>(null);
+  
+  // Get game context for booster pack access
+  const { selectedBoosterPack } = useGame();
 
   // Load collections on mount
   useEffect(() => {
@@ -40,13 +50,28 @@ const AssetDrawer: React.FC<AssetDrawerProps> = ({ isOpen, onClose, excalidrawAP
       
       loadAllCollections()
         .then(loadedCollections => {
-          setCollections(loadedCollections);
+          // Filter collections based on selected booster pack if applicable
+          let availableCollections = loadedCollections;
+          
+          if (selectedBoosterPack) {
+            // Find collection matching the selected booster pack's asset_directory_name
+            availableCollections = loadedCollections.filter(
+              collection => collection.name === selectedBoosterPack
+            );
+            
+            // If no matching collection found, show all collections as fallback
+            if (availableCollections.length === 0) {
+              availableCollections = loadedCollections;
+            }
+          }
+          
+          setCollections(availableCollections);
 
           // Set initial selected collection
-          if (loadedCollections.length > 0) {
+          if (availableCollections.length > 0) {
             setState(prev => ({
               ...prev,
-              selectedCollection: loadedCollections[0].id,
+              selectedCollection: availableCollections[0].id,
               isLoading: false
             }));
           } else {
@@ -66,7 +91,7 @@ const AssetDrawer: React.FC<AssetDrawerProps> = ({ isOpen, onClose, excalidrawAP
           }));
         });
     }
-  }, [isOpen, collections.length]);
+  }, [isOpen, collections.length, selectedBoosterPack]);
 
   // Update filtered assets when collection or search changes
   useEffect(() => {
@@ -165,6 +190,11 @@ const AssetDrawer: React.FC<AssetDrawerProps> = ({ isOpen, onClose, excalidrawAP
         elements: [...excalidrawAPI.getSceneElements(), imageElement],
       });
 
+      // Track asset usage if callback provided
+      if (onAssetUsed) {
+        onAssetUsed(asset.fileName, { x: center.x, y: center.y });
+      }
+
       onClose(); // Close the drawer after successful insertion
     } catch (error) {
       console.error('Error inserting image:', error);
@@ -175,7 +205,7 @@ const AssetDrawer: React.FC<AssetDrawerProps> = ({ isOpen, onClose, excalidrawAP
     } finally {
       setConvertingAsset(null);
     }
-  }, [excalidrawAPI, convertingAsset, onClose]);
+  }, [excalidrawAPI, convertingAsset, onClose, onAssetUsed]);
 
   /**
    * Handle collection tab selection
@@ -224,7 +254,7 @@ const AssetDrawer: React.FC<AssetDrawerProps> = ({ isOpen, onClose, excalidrawAP
                 <X size={20} />
               </button>
             </div>
-
+            
             {/* Search */}
             <div className="relative">
               <Search size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-medium-gray" />
