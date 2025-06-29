@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-// Local Timer Monitor - Simulates the cron job for monitor-game-timers
-// This script calls the monitor-game-timers Edge Function every 10 seconds
+// Local Timer Monitor - Simulates Supabase cron for database timer monitoring
+// This script calls the database timer monitoring function every 10 seconds
+// Much faster than calling Edge Functions - simulates production cron setup
 
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
@@ -14,13 +15,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Set a local cron secret for testing
-const CRON_SECRET = process.env.CRON_SECRET || 'local-dev-secret-123';
-
 let isRunning = false;
 let intervalId = null;
 
-async function callTimerMonitor() {
+async function callDatabaseTimerMonitor() {
   if (isRunning) {
     console.log('⏭️  Previous monitor call still running, skipping...');
     return;
@@ -28,17 +26,12 @@ async function callTimerMonitor() {
 
   isRunning = true;
   const startTime = Date.now();
-  
+
   try {
-    console.log(`🔍 [${new Date().toISOString()}] Calling monitor-game-timers...`);
-    
-    const { data, error } = await supabase.functions.invoke('monitor-game-timers', {
-      body: {},
-      headers: {
-        'x-cron-secret': CRON_SECRET,
-        'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`
-      }
-    });
+    console.log(`🔍 [${new Date().toISOString()}] Calling database timer monitor...`);
+
+    // Call the database function directly (much faster than Edge Function)
+    const { data, error } = await supabase.rpc('monitor_game_timers_db');
 
     const duration = Date.now() - startTime;
 
@@ -48,6 +41,10 @@ async function callTimerMonitor() {
     } else {
       console.log(`✅ Success: Processed ${data.processed}, Errors: ${data.errors}, Skipped: ${data.skipped}`);
       console.log(`   Duration: ${duration}ms\n`);
+
+      if (data.processed > 0) {
+        console.log(`🎮 Processed ${data.processed} expired games`);
+      }
     }
 
   } catch (error) {
@@ -60,16 +57,16 @@ async function callTimerMonitor() {
 }
 
 function startMonitoring() {
-  console.log('🚀 Starting local timer monitor...');
+  console.log('🚀 Starting local database timer monitor...');
   console.log(`📡 Supabase URL: ${process.env.VITE_SUPABASE_URL}`);
-  console.log(`🔑 Using cron secret: ${CRON_SECRET}`);
+  console.log('🗄️  Using direct database function calls (faster than Edge Functions)');
   console.log('⏰ Running every 10 seconds (Ctrl+C to stop)\n');
 
   // Call immediately
-  callTimerMonitor();
+  callDatabaseTimerMonitor();
 
   // Then call every 10 seconds
-  intervalId = setInterval(callTimerMonitor, 10000);
+  intervalId = setInterval(callDatabaseTimerMonitor, 10000);
 }
 
 function stopMonitoring() {

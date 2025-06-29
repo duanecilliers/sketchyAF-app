@@ -1,6 +1,6 @@
 // supabase/functions/monitor-game-timers/index.ts
-// Scheduled Edge Function to monitor and process expired game timers
-// Runs every 10 seconds via Supabase Cron
+// Production-ready scheduled Edge Function to monitor and process expired game timers
+// Runs every 10 seconds via Supabase Cron with comprehensive error handling and monitoring
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -12,154 +12,193 @@ interface MonitoringResult {
   skipped: number;
   executionTime: number;
   timestamp: string;
+  requestId: string;
+  environment: string;
+  version: string;
   message?: string;
   error?: string;
+  metrics?: {
+    lockAcquisitionTime?: number;
+    queryTime?: number;
+    processingTime?: number;
+    broadcastTime?: number;
+  };
 }
 
+// Production configuration
+const MONITOR_CONFIG = {
+  VERSION: '2.0.0',
+  MAX_EXECUTION_TIME: 50000, // 50 seconds (leave 10s buffer for 60s timeout)
+  MAX_GAMES_PER_EXECUTION: 50,
+  CONCURRENCY_LIMIT: 5,
+  GRACE_PERIOD_SECONDS: 15,
+  LOCK_TIMEOUT_SECONDS: 60,
+  LOG_LEVEL: Deno.env.get('LOG_LEVEL') || 'INFO'
+};
+
 serve(async (req) => {
+  const requestId = crypto.randomUUID();
   const startTime = Date.now();
   let processed = 0;
   let errors = 0;
   let skipped = 0;
 
+  // Performance metrics
+  const metrics = {
+    lockAcquisitionTime: 0,
+    queryTime: 0,
+    processingTime: 0,
+    broadcastTime: 0
+  };
+
+  // Determine environment
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  const environment = determineEnvironment(supabaseUrl);
+
   try {
-    // Debug environment
-    console.log('Monitor function called with headers:', {
-      cronSecret: req.headers.get('x-cron-secret'),
-      hasExpectedSecret: !!Deno.env.get('CRON_SECRET'),
-      hasSupabaseUrl: !!Deno.env.get('SUPABASE_URL'),
-      hasServiceRole: !!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    logInfo(requestId, 'Timer monitoring started', {
+      environment,
+      version: MONITOR_CONFIG.VERSION,
+      maxExecutionTime: MONITOR_CONFIG.MAX_EXECUTION_TIME,
+      maxGames: MONITOR_CONFIG.MAX_GAMES_PER_EXECUTION
     });
 
-    // Validate this is a scheduled execution (basic security)
-    const cronSecret = req.headers.get('x-cron-secret');
-    const expectedSecret = Deno.env.get('CRON_SECRET');
-
-    if (!cronSecret || cronSecret !== expectedSecret) {
-      return new Response(
-        JSON.stringify({
-          error: 'Unauthorized cron execution',
-          debug: {
-            receivedSecret: cronSecret ? 'present' : 'missing',
-            expectedSecret: expectedSecret ? 'present' : 'missing'
-          }
-        }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        }
-      )
+    // Validate this is a scheduled execution (enhanced security)
+    const authResult = validateCronAuthentication(req, requestId);
+    if (!authResult.isValid) {
+      return createErrorResponse(401, authResult.error, requestId, environment);
     }
 
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    )
+    // Check execution timeout early
+    if (Date.now() - startTime > MONITOR_CONFIG.MAX_EXECUTION_TIME) {
+      logError(requestId, 'Execution timeout during initialization');
+      return createErrorResponse(408, 'Execution timeout', requestId, environment);
+    }
 
-    // Prevent overlapping executions using database lock with improved reliability
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const isLocalDev = supabaseUrl.includes('127.0.0.1') ||
-                       supabaseUrl.includes('localhost') ||
-                       supabaseUrl.includes('kong:8000') || // Docker internal hostname
-                       supabaseUrl.includes('supabase_kong_site');
+    // Initialize Supabase client with enhanced error handling
+    const supabaseConfig = getSupabaseConfig();
+    if (!supabaseConfig.isValid) {
+      logError(requestId, 'Supabase configuration invalid', supabaseConfig.errors);
+      return createErrorResponse(500, 'Service configuration error', requestId, environment);
+    }
 
+    const supabase = createClient(supabaseConfig.url, supabaseConfig.serviceRoleKey);
+
+    // Enhanced advisory locking for production with timeout monitoring
     const lockKey = 'timer_monitoring_lock';
     let lockAcquired = false;
+    const lockStartTime = Date.now();
 
-    console.log(`Environment check: URL=${supabaseUrl}, isLocalDev=${isLocalDev}`);
+    logInfo(requestId, 'Starting advisory lock acquisition', {
+      environment,
+      lockKey,
+      timeout: MONITOR_CONFIG.LOCK_TIMEOUT_SECONDS
+    });
 
-    if (!isLocalDev) {
-      console.log('Production environment detected, using enhanced advisory lock');
-
-      // First, clean up any stuck locks
+    if (environment === 'production') {
       try {
-        const { data: cleanupCount } = await supabase.rpc('cleanup_stuck_advisory_locks');
-        if (cleanupCount && cleanupCount > 0) {
-          console.log(`Cleaned up ${cleanupCount} stuck advisory locks`);
+        // Production: Use enhanced advisory locking with cleanup
+        const lockResult = await acquireProductionLock(supabase, lockKey, requestId);
+
+        if (!lockResult.acquired) {
+          metrics.lockAcquisitionTime = Date.now() - lockStartTime;
+          logInfo(requestId, 'Lock acquisition failed', {
+            reason: lockResult.reason,
+            lockTime: metrics.lockAcquisitionTime
+          });
+
+          return createSuccessResponse({
+            processed: 0,
+            errors: 0,
+            skipped: 1,
+            executionTime: Date.now() - startTime,
+            timestamp: new Date().toISOString(),
+            requestId,
+            environment,
+            version: MONITOR_CONFIG.VERSION,
+            message: lockResult.reason,
+            metrics: { lockAcquisitionTime: metrics.lockAcquisitionTime }
+          });
         }
-      } catch (cleanupError) {
-        console.warn('Failed to cleanup stuck locks:', cleanupError);
-        // Continue anyway
+
+        lockAcquired = true;
+        metrics.lockAcquisitionTime = Date.now() - lockStartTime;
+        logInfo(requestId, 'Production advisory lock acquired', {
+          lockTime: metrics.lockAcquisitionTime
+        });
+
+      } catch (lockError) {
+        metrics.lockAcquisitionTime = Date.now() - lockStartTime;
+        logError(requestId, 'Lock acquisition failed with error', {
+          error: lockError instanceof Error ? lockError.message : 'Unknown error',
+          lockTime: metrics.lockAcquisitionTime
+        });
+
+        return createErrorResponse(500, 'Failed to acquire advisory lock', requestId, environment);
       }
-
-      // Try to acquire the lock with enhanced function
-      const { data: lockResult, error: lockError } = await supabase.rpc('acquire_advisory_lock_enhanced', {
-        p_lock_key: lockKey,
-        p_timeout_seconds: 60, // 1 minute timeout for timer monitoring
-        p_acquired_by: 'monitor-game-timers'
-      });
-
-      if (lockError) {
-        console.error('Enhanced advisory lock error:', lockError);
-        return new Response(JSON.stringify({
-          processed: 0,
-          errors: 1,
-          skipped: 0,
-          executionTime: Date.now() - startTime,
-          timestamp: new Date().toISOString(),
-          error: 'Failed to acquire enhanced advisory lock'
-        }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        })
-      }
-
-      if (!lockResult) {
-        console.log('Timer monitoring already in progress, skipping execution');
-        return new Response(JSON.stringify({
-          processed: 0,
-          errors: 0,
-          skipped: 1,
-          executionTime: Date.now() - startTime,
-          timestamp: new Date().toISOString(),
-          message: 'Execution skipped - already in progress'
-        }), {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        })
-      }
-
-      lockAcquired = true;
-      console.log('Enhanced advisory lock acquired successfully');
     } else {
-      console.log('Local development detected, skipping advisory lock');
+      // Development: Skip locking but log for consistency
+      metrics.lockAcquisitionTime = Date.now() - lockStartTime;
+      logInfo(requestId, 'Development environment - skipping advisory lock', {
+        lockTime: metrics.lockAcquisitionTime
+      });
     }
 
     try {
-      // Find expired games using our database function
-      const { data: expiredGames, error: queryError } = await supabase
-        .rpc('find_expired_games', { limit_count: 50 });
-
-      if (queryError) {
-        console.error('Error querying expired games:', queryError);
-        errors++;
-        return new Response(JSON.stringify({
-          processed: 0,
-          errors: 1,
-          skipped: 0,
-          executionTime: Date.now() - startTime,
-          timestamp: new Date().toISOString(),
-          error: 'Database query failed'
-        }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        })
+      // Check execution timeout before starting main processing
+      if (Date.now() - startTime > MONITOR_CONFIG.MAX_EXECUTION_TIME) {
+        logError(requestId, 'Execution timeout before processing');
+        return createErrorResponse(408, 'Execution timeout', requestId, environment);
       }
 
-      console.log(`Found ${expiredGames?.length || 0} expired games to process`);
+      // Find expired games with timeout monitoring
+      const queryStartTime = Date.now();
+      logInfo(requestId, 'Querying expired games', {
+        limit: MONITOR_CONFIG.MAX_GAMES_PER_EXECUTION
+      });
 
-      if (!expiredGames || expiredGames.length === 0) {
-        return new Response(JSON.stringify({
+      const { data: expiredGames, error: queryError } = await supabase
+        .rpc('find_expired_games', { limit_count: MONITOR_CONFIG.MAX_GAMES_PER_EXECUTION });
+
+      metrics.queryTime = Date.now() - queryStartTime;
+
+      if (queryError) {
+        logError(requestId, 'Database query failed', {
+          error: queryError.message,
+          queryTime: metrics.queryTime
+        });
+        errors++;
+
+        return createErrorResponse(500, 'Database query failed', requestId, environment, {
+          queryTime: metrics.queryTime,
+          error: queryError.message
+        });
+      }
+
+      const gameCount = expiredGames?.length || 0;
+      logInfo(requestId, 'Expired games query completed', {
+        gameCount,
+        queryTime: metrics.queryTime
+      });
+
+      if (gameCount === 0) {
+        return createSuccessResponse({
           processed: 0,
           errors: 0,
           skipped: 0,
           executionTime: Date.now() - startTime,
           timestamp: new Date().toISOString(),
-          message: 'No expired games found'
-        }), {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        })
+          requestId,
+          environment,
+          version: MONITOR_CONFIG.VERSION,
+          message: 'No expired games found',
+          metrics: {
+            lockAcquisitionTime: metrics.lockAcquisitionTime,
+            queryTime: metrics.queryTime,
+            processingTime: 0,
+            broadcastTime: 0
+          }
+        });
       }
 
       // Process expired games in parallel with concurrency limit
@@ -675,4 +714,163 @@ async function handleDrawingPhaseGracePeriod(
   return { shouldSkip: false, shouldDelay: false, reason: 'Grace period expired' };
 }
 
+// Production helper functions for enhanced monitoring and error handling
 
+function determineEnvironment(supabaseUrl: string): string {
+  if (supabaseUrl.includes('127.0.0.1') ||
+      supabaseUrl.includes('localhost') ||
+      supabaseUrl.includes('kong:8000') ||
+      supabaseUrl.includes('supabase_kong_site')) {
+    return 'development';
+  }
+  return 'production';
+}
+
+function validateCronAuthentication(req: Request, requestId: string): { isValid: boolean; error?: string } {
+  const cronSecret = req.headers.get('x-cron-secret');
+  const expectedSecret = Deno.env.get('CRON_SECRET');
+
+  logDebug(requestId, 'Validating cron authentication', {
+    hasReceivedSecret: !!cronSecret,
+    hasExpectedSecret: !!expectedSecret
+  });
+
+  if (!cronSecret || !expectedSecret) {
+    return {
+      isValid: false,
+      error: 'Missing cron authentication credentials'
+    };
+  }
+
+  if (cronSecret !== expectedSecret) {
+    return {
+      isValid: false,
+      error: 'Invalid cron authentication'
+    };
+  }
+
+  return { isValid: true };
+}
+
+interface SupabaseConfig {
+  url: string;
+  serviceRoleKey: string;
+  isValid: boolean;
+  errors: string[];
+}
+
+function getSupabaseConfig(): SupabaseConfig {
+  const url = Deno.env.get('SUPABASE_URL');
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+  const errors: string[] = [];
+
+  if (!url) errors.push('SUPABASE_URL missing');
+  if (!serviceRoleKey) errors.push('SUPABASE_SERVICE_ROLE_KEY missing');
+
+  return {
+    url: url || '',
+    serviceRoleKey: serviceRoleKey || '',
+    isValid: errors.length === 0,
+    errors
+  };
+}
+
+async function acquireProductionLock(
+  supabase: ReturnType<typeof createClient>,
+  lockKey: string,
+  requestId: string
+): Promise<{ acquired: boolean; reason: string }> {
+  try {
+    // First, clean up any stuck locks
+    logDebug(requestId, 'Cleaning up stuck advisory locks');
+
+    const { data: cleanupCount } = await supabase.rpc('cleanup_stuck_advisory_locks');
+    if (cleanupCount && cleanupCount > 0) {
+      logInfo(requestId, 'Cleaned up stuck advisory locks', { count: cleanupCount });
+    }
+
+    // Try to acquire the lock with enhanced function
+    logDebug(requestId, 'Attempting to acquire advisory lock', {
+      lockKey,
+      timeout: MONITOR_CONFIG.LOCK_TIMEOUT_SECONDS
+    });
+
+    const { data: lockResult, error: lockError } = await supabase.rpc('acquire_advisory_lock_enhanced', {
+      p_lock_key: lockKey,
+      p_timeout_seconds: MONITOR_CONFIG.LOCK_TIMEOUT_SECONDS,
+      p_acquired_by: `monitor-game-timers-${requestId.slice(0, 8)}`
+    });
+
+    if (lockError) {
+      logError(requestId, 'Advisory lock RPC error', lockError);
+      throw new Error(`Lock RPC failed: ${lockError.message}`);
+    }
+
+    if (!lockResult) {
+      return {
+        acquired: false,
+        reason: 'Timer monitoring already in progress'
+      };
+    }
+
+    return {
+      acquired: true,
+      reason: 'Lock acquired successfully'
+    };
+
+  } catch (error) {
+    logError(requestId, 'Lock acquisition exception', error);
+    throw error;
+  }
+}
+
+function createErrorResponse(
+  status: number,
+  message: string,
+  requestId: string,
+  environment: string,
+  additionalData?: Record<string, unknown>
+): Response {
+  return new Response(
+    JSON.stringify({
+      success: false,
+      error: message,
+      requestId,
+      environment,
+      version: MONITOR_CONFIG.VERSION,
+      timestamp: new Date().toISOString(),
+      ...additionalData
+    }),
+    {
+      status,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    }
+  );
+}
+
+function createSuccessResponse(data: MonitoringResult): Response {
+  return new Response(
+    JSON.stringify(data),
+    {
+      status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    }
+  );
+}
+
+function logInfo(requestId: string, message: string, data?: unknown): void {
+  if (MONITOR_CONFIG.LOG_LEVEL === 'DEBUG' || MONITOR_CONFIG.LOG_LEVEL === 'INFO') {
+    console.log(`[${requestId}] ${message}`, data ? JSON.stringify(data) : '');
+  }
+}
+
+function logError(requestId: string, message: string, data?: unknown): void {
+  console.error(`[${requestId}] ERROR: ${message}`, data ? JSON.stringify(data) : '');
+}
+
+function logDebug(requestId: string, message: string, data?: unknown): void {
+  if (MONITOR_CONFIG.LOG_LEVEL === 'DEBUG') {
+    console.log(`[${requestId}] DEBUG: ${message}`, data ? JSON.stringify(data) : '');
+  }
+}

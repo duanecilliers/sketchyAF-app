@@ -30,7 +30,7 @@ BEGIN
         'data', jsonb_build_object(
           'newPhase', NEW.status,
           'previousPhase', OLD.status,
-          'phaseStartedAt', NEW.updated_at,
+          'phaseStartedAt', now(),
           'gameData', jsonb_build_object(
             'prompt', NEW.prompt,
             'maxPlayers', NEW.max_players,
@@ -105,13 +105,18 @@ BEGIN
   
   -- Call Edge Function to broadcast via PubNub
   -- Using pg_net extension for HTTP requests
+  -- In development: use local Edge Functions server (port 9999)
+  -- In production: use Supabase API Gateway (port 54321)
   PERFORM net.http_post(
-    url := current_setting('app.supabase_url', true) || '/functions/v1/broadcast-pubnub-event',
+    url := CASE
+      WHEN current_setting('app.environment', true) = 'development' THEN 'http://localhost:9999/functions/v1/broadcast-pubnub-event'
+      ELSE COALESCE(current_setting('app.supabase_url', true), 'http://127.0.0.1:54321') || '/functions/v1/broadcast-pubnub-event'
+    END,
     headers := jsonb_build_object(
-      'Authorization', 'Bearer ' || current_setting('app.service_role_key', true),
+      'Authorization', 'Bearer ' || COALESCE(current_setting('app.service_role_key', true), 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU'),
       'Content-Type', 'application/json'
     ),
-    body := event_data::text
+    body := event_data
   );
   
   RETURN COALESCE(NEW, OLD);
